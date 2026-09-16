@@ -94,3 +94,111 @@ func TestWidget_MockProvider_EdgeCases(t *testing.T) {
 		})
 	}
 }
+
+// TestNew_ReadsTextFormatFromConfig is a regression test: New() used to
+// hardcode textFormat to "%.0f" regardless of the configured text.format,
+// silently ignoring custom formats (e.g. GB/percent display) in text mode.
+func TestNew_ReadsTextFormatFromConfig(t *testing.T) {
+	cfg := config.WidgetConfig{
+		Type:    "memory",
+		ID:      "test_memory_format",
+		Enabled: config.BoolPtr(true),
+		Position: config.PositionConfig{
+			X: 0, Y: 0, W: 128, H: 20,
+		},
+		Mode: "text",
+		Text: &config.TextConfig{
+			Format: "R %.1fGB %.1f%%",
+		},
+	}
+
+	widget, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if widget.textFormat != "R %.1fGB %.1f%%" {
+		t.Errorf("textFormat = %q, want %q", widget.textFormat, "R %.1fGB %.1f%%")
+	}
+}
+
+// TestNew_DefaultTextFormat verifies the "%.0f" default still applies when
+// no text.format is configured.
+func TestNew_DefaultTextFormat(t *testing.T) {
+	cfg := config.WidgetConfig{
+		Type:    "memory",
+		ID:      "test_memory_default_format",
+		Enabled: config.BoolPtr(true),
+		Position: config.PositionConfig{
+			X: 0, Y: 0, W: 128, H: 20,
+		},
+		Mode: "text",
+	}
+
+	widget, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if widget.textFormat != "%.0f" {
+		t.Errorf("textFormat = %q, want %q", widget.textFormat, "%.0f")
+	}
+}
+
+func TestCountFormatVerbs(t *testing.T) {
+	tests := []struct {
+		format string
+		want   int
+	}{
+		{"%.0f", 1},
+		{"%.0f%%", 1},
+		{"%.1fGB %.1f%%", 2},
+		{"no verbs here", 0},
+		{"100%% done", 0},
+		{"%d/%d/%d", 3},
+	}
+
+	for _, tt := range tests {
+		if got := countFormatVerbs(tt.format); got != tt.want {
+			t.Errorf("countFormatVerbs(%q) = %d, want %d", tt.format, got, tt.want)
+		}
+	}
+}
+
+// TestRender_DualFormat_UsesUsedGB verifies that a two-verb text format
+// renders successfully in text mode using both the GB and percent values
+// (rather than being passed as a single value to the underlying %.1f verb,
+// which would panic via fmt's "%!f(MISSING)" only for too few args, but
+// silently mis-render for a swapped/undersupplied case).
+func TestRender_DualFormat_UsesUsedGB(t *testing.T) {
+	cfg := config.WidgetConfig{
+		Type:    "memory",
+		ID:      "test_memory_dual",
+		Enabled: config.BoolPtr(true),
+		Position: config.PositionConfig{
+			X: 0, Y: 0, W: 128, H: 20,
+		},
+		Mode: "text",
+		Text: &config.TextConfig{
+			Format: "R %.1fGB %.1f%%",
+		},
+	}
+
+	widget, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	widget.memoryProvider = &metrics.MockMemory{
+		UsedPercentFunc: func() (float64, error) { return 50.0, nil },
+		UsedGBFunc:      func() (float64, float64, error) { return 8.0, 16.0, nil },
+	}
+
+	if err := widget.Update(); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	if _, err := widget.Render(); err != nil {
+		t.Errorf("Render() error = %v", err)
+	}
+}
