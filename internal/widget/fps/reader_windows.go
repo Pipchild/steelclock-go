@@ -14,6 +14,10 @@ var (
 	procOpenFileMappingW = modKernel32.NewProc("OpenFileMappingW")
 	procMapViewOfFile    = modKernel32.NewProc("MapViewOfFile")
 	procUnmapViewOfFile  = modKernel32.NewProc("UnmapViewOfFile")
+
+	modUser32                    = syscall.NewLazyDLL("user32.dll")
+	procGetForegroundWindow      = modUser32.NewProc("GetForegroundWindow")
+	procGetWindowThreadProcessId = modUser32.NewProc("GetWindowThreadProcessId")
 )
 
 const (
@@ -36,8 +40,25 @@ const (
 	entryOffProcessID = 0
 	entryOffName      = 4
 	entryOffNameLen   = 260 // MAX_PATH
-	entryOffFrameTime = 280 // frame time in microseconds
+	entryOffTime0     = 268 // start of the once-per-second measurement period (ms, GetTickCount-style)
+	entryOffTime1     = 272 // end of that measurement period (ms)
+	entryOffFrames    = 276 // frames rendered during (Time1 - Time0)
+	entryOffFrameTime = 280 // most recent single-frame time, in microseconds
 )
+
+// getForegroundProcessID returns the process ID owning the current OS
+// foreground window. This is more reliable than RTSS's own
+// dwLastForegroundAppProcessID field, which can be stale right after RTSS
+// (re)starts — e.g. after an update — until the next focus change.
+func getForegroundProcessID() uint32 {
+	hwnd, _, _ := procGetForegroundWindow.Call()
+	if hwnd == 0 {
+		return 0
+	}
+	var pid uint32
+	_, _, _ = procGetWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
+	return pid
+}
 
 // rtssReader reads current framerate from RTSS's (RivaTuner Statistics
 // Server) shared memory segment. RTSS is the framerate-capture engine behind
@@ -87,9 +108,9 @@ func readCString(base uintptr, maxLen int) string {
 	return string(b)
 }
 
-// GetFPS returns the current framerate and process name of RTSS's tracked
-// foreground application. Returns (0, "", nil) when RTSS is running but no
-// application is currently hooked and active — not an error condition.
+// GetFPS returns the current framerate and process name of the active
+// foreground game. Returns (0, "", nil) when RTSS is running but nothing
+// relevant is currently hooked and rendering — not an error condition.
 func (r *rtssReader) GetFPS() (fps float64, processName string, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -100,11 +121,19 @@ func (r *rtssReader) GetFPS() (fps float64, processName string, err error) {
 	if appArrSize > rtssMaxProcesses {
 		appArrSize = rtssMaxProcesses
 	}
-	fgPID := readU32(r.base, offLastForegroundAppProcessID)
+	rtssFgPID := readU32(r.base, offLastForegroundAppProcessID)
+	osFgPID := getForegroundProcessID()
 
 	if appEntrySize == 0 || appArrSize == 0 {
 		return 0, "", nil
 	}
+
+	var (
+		osMatchFPS, rtssMatchFPS, latestFPS       float64
+		osMatchName, rtssMatchName, latestName    string
+		osMatchFound, rtssMatchFound, latestFound bool
+		latestTime1                               uint32
+	)
 
 	for i := uint32(0); i < appArrSize; i++ {
 		entryBase := r.base + appArrOffset + uintptr(i)*appEntrySize
@@ -112,20 +141,50 @@ func (r *rtssReader) GetFPS() (fps float64, processName string, err error) {
 		if pid == 0 {
 			continue
 		}
-		// Prefer the foreground app when RTSS reports one (v2.16+); older
-		// versions leave this at 0, so fall back to the first active entry.
-		if fgPID != 0 && pid != fgPID {
+		// dwFrameTime (a single frame's time) is only used here as an "is
+		// this entry actively rendering right now" signal — it's noisy
+		// frame-to-frame. The displayed value uses the smoothed once-per-
+		// second dwFrames/(Time1-Time0) window RTSS itself documents for
+		// this purpose, matching what RTSS's own OSD and similar overlay
+		// tools (Steam, etc.) show rather than a single-frame spike.
+		if readU32(entryBase, entryOffFrameTime) == 0 {
 			continue
 		}
-		frameTime := readU32(entryBase, entryOffFrameTime)
-		if frameTime == 0 {
+		time0 := readU32(entryBase, entryOffTime0)
+		time1 := readU32(entryBase, entryOffTime1)
+		frames := readU32(entryBase, entryOffFrames)
+		if time0 == 0 || time1 <= time0 {
 			continue
 		}
 		name := readCString(entryBase+entryOffName, entryOffNameLen)
-		return 1000000.0 / float64(frameTime), name, nil
+		entryFPS := 1000.0 * float64(frames) / float64(time1-time0)
+
+		if osFgPID != 0 && pid == osFgPID {
+			osMatchFPS, osMatchName, osMatchFound = entryFPS, name, true
+		}
+		if rtssFgPID != 0 && pid == rtssFgPID {
+			rtssMatchFPS, rtssMatchName, rtssMatchFound = entryFPS, name, true
+		}
+		if !latestFound || time1 > latestTime1 {
+			latestFPS, latestName, latestTime1, latestFound = entryFPS, name, time1, true
+		}
 	}
 
-	return 0, "", nil
+	// Prefer matching the OS's actual foreground window — more reliable than
+	// RTSS's own tracking, which can be stale right after RTSS (re)starts
+	// (e.g. after an update) until the next focus change. Fall back to RTSS's
+	// own foreground field, then to whichever hooked app rendered most
+	// recently, rather than an arbitrary array-order pick.
+	switch {
+	case osMatchFound:
+		return osMatchFPS, osMatchName, nil
+	case rtssMatchFound:
+		return rtssMatchFPS, rtssMatchName, nil
+	case latestFound:
+		return latestFPS, latestName, nil
+	default:
+		return 0, "", nil
+	}
 }
 
 // Close unmaps the shared memory segment.
