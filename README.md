@@ -246,6 +246,7 @@ See [CONFIG_GUIDE.md](profiles/CONFIG_GUIDE.md) for detailed widget properties a
 | Device Family                           | Display | Backend           | Notes                                       |
 |-----------------------------------------|---------|-------------------|---------------------------------------------|
 | Apex keyboards (7, Pro, 5, etc.)        | 128x40  | direct, gamesense | Default `mi_01` interface                   |
+| Apex Pro TKL (Gen 3, PID `1628`)        | 128x40  | direct, gamesense | Different OLED cmd (`0x1F 0x81`); auto-detected |
 | GameDAC Gen 2 / Arctis Nova Pro (+Omni) | 128x64  | direct            | Use `direct`; GameSense does not drive it\* |
 | Arctis Nova 5P                          | 128x64  | direct            | Same protocol as Nova Pro                   |
 

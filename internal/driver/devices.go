@@ -54,6 +54,18 @@ var KnownDevices = []KnownDevice{
 			Height int
 		}{128, 40},
 	},
+	// Apex Pro TKL Gen 3 — OLED uses cmd 0x1F 0x81 instead of the legacy 0x61
+	// (confirmed via community protocol docs + USB capture reverse engineering).
+	{
+		VID:  SteelSeriesVID,
+		PID:  0x1628,
+		Name: "Apex Pro TKL (Gen 3)",
+		DisplaySize: struct {
+			Width  int
+			Height int
+		}{128, 40},
+		NewProtocol: func() Protocol { return &ApexGen3Protocol{} },
+	},
 	{
 		VID:  SteelSeriesVID,
 		PID:  0x161C,
