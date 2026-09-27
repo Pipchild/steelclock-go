@@ -3,17 +3,23 @@
 package fps
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"syscall"
 	"unsafe"
 )
 
+// errRTSSGone reports that the mapped segment is no longer a valid RTSS
+// segment (RTSS exited or replaced it); the caller should reopen it.
+var errRTSSGone = errors.New("RTSS shared memory is no longer valid")
+
 var (
 	modKernel32          = syscall.NewLazyDLL("kernel32.dll")
 	procOpenFileMappingW = modKernel32.NewProc("OpenFileMappingW")
 	procMapViewOfFile    = modKernel32.NewProc("MapViewOfFile")
 	procUnmapViewOfFile  = modKernel32.NewProc("UnmapViewOfFile")
+	procGetTickCount     = modKernel32.NewProc("GetTickCount")
 
 	modUser32                    = syscall.NewLazyDLL("user32.dll")
 	procGetForegroundWindow      = modUser32.NewProc("GetForegroundWindow")
@@ -25,14 +31,21 @@ const (
 	rtssMappingName  = "RTSSSharedMemoryV2"
 	rtssMaxProcesses = 256 // matches RTSS_SHARED_MEMORY::arrApp[256]
 
+	rtssSignature    = 0x52545353 // 'RTSS' while the segment is valid
+	rtssMinVersion   = 0x00020000 // v2.0: first layout with dwAppArrOffset etc.
+	rtssFgPIDVersion = 0x00020010 // v2.16: adds dwLastForegroundAppProcessID
+	rtssStaleAfterMs = 2000       // minimum age before a measurement window is stale
+
 	// Header field byte offsets. Stable since RTSS shared memory v2.0 — the
 	// header itself carries dwAppArrOffset/dwAppEntrySize/dwAppArrSize so app
 	// entries never need to be located by a hardcoded struct size.
 	// See RTSSSharedMemory.h (RTSS SDK) for the authoritative layout.
+	offSignature                  = 0
+	offVersion                    = 4
 	offAppEntrySize               = 8
 	offAppArrOffset               = 12
 	offAppArrSize                 = 16
-	offLastForegroundAppProcessID = 68 // valid for shared memory v2.16+; 0 if older/unset
+	offLastForegroundAppProcessID = 68 // valid for shared memory v2.16+
 
 	// RTSS_SHARED_MEMORY_APP_ENTRY field byte offsets, relative to the
 	// entry's own base. These are the struct's leading fields, stable since
@@ -115,22 +128,38 @@ func (r *rtssReader) GetFPS() (fps float64, processName string, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	if r.base == 0 {
+		return 0, "", errRTSSGone
+	}
+	// Per the RTSS SDK, only a segment carrying the 'RTSS' signature and a
+	// v2.0+ layout may be read; anything else must be reopened.
+	version := readU32(r.base, offVersion)
+	if readU32(r.base, offSignature) != rtssSignature || version < rtssMinVersion {
+		return 0, "", errRTSSGone
+	}
+
 	appEntrySize := uintptr(readU32(r.base, offAppEntrySize))
 	appArrOffset := uintptr(readU32(r.base, offAppArrOffset))
 	appArrSize := readU32(r.base, offAppArrSize)
 	if appArrSize > rtssMaxProcesses {
 		appArrSize = rtssMaxProcesses
 	}
-	rtssFgPID := readU32(r.base, offLastForegroundAppProcessID)
+	var rtssFgPID uint32
+	if version >= rtssFgPIDVersion {
+		rtssFgPID = readU32(r.base, offLastForegroundAppProcessID)
+	}
 	osFgPID := getForegroundProcessID()
+	tick, _, _ := procGetTickCount.Call()
+	now := uint32(tick)
 
-	if appEntrySize == 0 || appArrSize == 0 {
+	// Every entry must at least hold the fields read below.
+	if appEntrySize < entryOffFrameTime+4 || appArrSize == 0 {
 		return 0, "", nil
 	}
 
 	var (
 		osMatchFPS, rtssMatchFPS, latestFPS       float64
-		osMatchName, rtssMatchName, latestName    string
+		osMatchBase, rtssMatchBase, latestBase    uintptr
 		osMatchFound, rtssMatchFound, latestFound bool
 		latestTime1                               uint32
 	)
@@ -156,17 +185,22 @@ func (r *rtssReader) GetFPS() (fps float64, processName string, err error) {
 		if time0 == 0 || time1 <= time0 {
 			continue
 		}
-		name := readCString(entryBase+entryOffName, entryOffNameLen)
+		// RTSS closes a measurement window about once per averaging interval
+		// while the app presents frames; a window that stopped advancing means
+		// the app is minimized, paused or hung and its FPS is stale.
+		if now-time1 > max(rtssStaleAfterMs, 2*(time1-time0)) {
+			continue
+		}
 		entryFPS := 1000.0 * float64(frames) / float64(time1-time0)
 
 		if osFgPID != 0 && pid == osFgPID {
-			osMatchFPS, osMatchName, osMatchFound = entryFPS, name, true
+			osMatchFPS, osMatchBase, osMatchFound = entryFPS, entryBase, true
 		}
 		if rtssFgPID != 0 && pid == rtssFgPID {
-			rtssMatchFPS, rtssMatchName, rtssMatchFound = entryFPS, name, true
+			rtssMatchFPS, rtssMatchBase, rtssMatchFound = entryFPS, entryBase, true
 		}
 		if !latestFound || time1 > latestTime1 {
-			latestFPS, latestName, latestTime1, latestFound = entryFPS, name, time1, true
+			latestFPS, latestBase, latestTime1, latestFound = entryFPS, entryBase, time1, true
 		}
 	}
 
@@ -174,14 +208,15 @@ func (r *rtssReader) GetFPS() (fps float64, processName string, err error) {
 	// RTSS's own tracking, which can be stale right after RTSS (re)starts
 	// (e.g. after an update) until the next focus change. Fall back to RTSS's
 	// own foreground field, then to whichever hooked app rendered most
-	// recently, rather than an arbitrary array-order pick.
+	// recently, rather than an arbitrary array-order pick. The process name is
+	// decoded only for the entry actually selected, not every candidate.
 	switch {
 	case osMatchFound:
-		return osMatchFPS, osMatchName, nil
+		return osMatchFPS, readCString(osMatchBase+entryOffName, entryOffNameLen), nil
 	case rtssMatchFound:
-		return rtssMatchFPS, rtssMatchName, nil
+		return rtssMatchFPS, readCString(rtssMatchBase+entryOffName, entryOffNameLen), nil
 	case latestFound:
-		return latestFPS, latestName, nil
+		return latestFPS, readCString(latestBase+entryOffName, entryOffNameLen), nil
 	default:
 		return 0, "", nil
 	}
@@ -189,6 +224,8 @@ func (r *rtssReader) GetFPS() (fps float64, processName string, err error) {
 
 // Close unmaps the shared memory segment.
 func (r *rtssReader) Close() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.base != 0 {
 		_, _, _ = procUnmapViewOfFile.Call(r.base)
 		r.base = 0

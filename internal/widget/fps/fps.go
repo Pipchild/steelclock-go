@@ -6,6 +6,7 @@
 package fps
 
 import (
+	"fmt"
 	"image"
 	"log"
 	"sync"
@@ -65,6 +66,10 @@ func New(cfg config.WidgetConfig) (*Widget, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Bar/graph/gauge scale values as 0-100 percent, which FPS is not.
+	if mr.DisplayMode != render.DisplayModeText {
+		return nil, fmt.Errorf("fps widget supports only text mode, got %q", mr.DisplayMode)
+	}
 
 	textFormat := "%.0f FPS"
 	if cfg.Text != nil && cfg.Text.Format != "" {
@@ -110,6 +115,11 @@ func (w *Widget) Update() error {
 
 	value, _, err := w.reader.GetFPS()
 	if err != nil {
+		// RTSS released or replaced its segment: drop the mapping so the
+		// reconnect path above reopens it once RTSS is back.
+		w.reader.Close()
+		w.reader = nil
+		w.hasData = false
 		return err
 	}
 

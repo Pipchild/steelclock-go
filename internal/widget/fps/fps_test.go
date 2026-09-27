@@ -116,6 +116,49 @@ func TestWidget_Update_ReaderError(t *testing.T) {
 	}
 }
 
+// TestWidget_Update_ReaderError_DropsReader verifies that a failing reader
+// (e.g. RTSS having released its shared memory segment) is dropped so the
+// reconnect path in Update() can reopen it, rather than being retried
+// forever with the same broken mapping.
+func TestWidget_Update_ReaderError_DropsReader(t *testing.T) {
+	w := newTestWidget(t)
+	mock := &mockReader{returnErr: fmt.Errorf("simulated RTSS segment gone")}
+	w.reader = mock
+
+	if err := w.Update(); err == nil {
+		t.Fatal("Update() should return error when reader fails")
+	}
+
+	if !mock.closed {
+		t.Error("Update() should Close() a reader that failed")
+	}
+	if w.reader != nil {
+		t.Error("Update() should drop the reader after an error so it reconnects")
+	}
+	w.mu.RLock()
+	hasData := w.hasData
+	w.mu.RUnlock()
+	if hasData {
+		t.Error("hasData should be reset to false after a reader error")
+	}
+}
+
+func TestNew_RejectsNonTextMode(t *testing.T) {
+	cfg := config.WidgetConfig{
+		Type:    "fps",
+		ID:      "test_fps_bar",
+		Enabled: config.BoolPtr(true),
+		Position: config.PositionConfig{
+			X: 0, Y: 0, W: 128, H: 20,
+		},
+		Mode: "bar",
+	}
+
+	if _, err := New(cfg); err == nil {
+		t.Error("New() should reject non-text display modes (bar/graph/gauge scale as 0-100%, FPS is not)")
+	}
+}
+
 func TestWidget_Render_NoReader_ShowsNA(t *testing.T) {
 	w := newTestWidget(t)
 	w.reader = nil
