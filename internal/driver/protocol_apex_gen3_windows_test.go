@@ -110,6 +110,21 @@ func TestApexGen3Protocol_ImplementsProtocol(t *testing.T) {
 	var _ Protocol = (*ApexGen3Protocol)(nil)
 }
 
+func TestApexGen3Protocol_PadToReportLength(t *testing.T) {
+	p := &ApexGen3Protocol{}
+	if !protocolWantsReportLengthPadding(p) {
+		t.Error("ApexGen3Protocol should opt into report-length padding")
+	}
+}
+
+func TestProtocolWantsReportLengthPadding_DefaultFalse(t *testing.T) {
+	// A protocol that does not implement ReportLengthPadding (e.g. the
+	// classic Apex family) must not be padded.
+	if protocolWantsReportLengthPadding(&ApexProtocol{}) {
+		t.Error("ApexProtocol should not opt into report-length padding")
+	}
+}
+
 func TestResolveProtocol_ApexProTklGen3(t *testing.T) {
 	p := resolveProtocol(SteelSeriesVID, 0x1628)
 	if _, ok := p.(*ApexGen3Protocol); !ok {

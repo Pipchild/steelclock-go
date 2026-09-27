@@ -247,7 +247,9 @@ func (d *HIDDriver) Open() error {
 	// length that differs from the protocol's fixed packet size. When it isn't
 	// already known from the capability-based interface selection above, look it
 	// up now so sendPacket's existing zero-padding can absorb the difference.
-	if d.reportLen == 0 {
+	// Opt-in per protocol (ReportLengthPadding) so devices that already work
+	// today with an exact-size packet are never silently padded.
+	if d.reportLen == 0 && protocolWantsReportLengthPadding(d.protocol) {
 		if devices, derr := EnumerateDevices(); derr == nil {
 			for _, info := range devices {
 				if info.Path == devicePath && info.HasCaps && info.FeatureReportLen > 0 {
