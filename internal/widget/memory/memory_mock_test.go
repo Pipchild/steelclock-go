@@ -108,7 +108,7 @@ func TestNew_ReadsTextFormatFromConfig(t *testing.T) {
 		},
 		Mode: "text",
 		Text: &config.TextConfig{
-			Format: "R %.1fGB %.1f%%",
+			Format: "R {used}GB {percent}%",
 		},
 	}
 
@@ -117,8 +117,8 @@ func TestNew_ReadsTextFormatFromConfig(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	if widget.textFormat != "R %.1fGB %.1f%%" {
-		t.Errorf("textFormat = %q, want %q", widget.textFormat, "R %.1fGB %.1f%%")
+	if widget.textFormat != "R {used}GB {percent}%" {
+		t.Errorf("textFormat = %q, want %q", widget.textFormat, "R {used}GB {percent}%")
 	}
 }
 
@@ -145,31 +145,9 @@ func TestNew_DefaultTextFormat(t *testing.T) {
 	}
 }
 
-func TestCountFormatVerbs(t *testing.T) {
-	tests := []struct {
-		format string
-		want   int
-	}{
-		{"%.0f", 1},
-		{"%.0f%%", 1},
-		{"%.1fGB %.1f%%", 2},
-		{"no verbs here", 0},
-		{"100%% done", 0},
-		{"%d/%d/%d", 3},
-	}
-
-	for _, tt := range tests {
-		if got := countFormatVerbs(tt.format); got != tt.want {
-			t.Errorf("countFormatVerbs(%q) = %d, want %d", tt.format, got, tt.want)
-		}
-	}
-}
-
-// TestRender_DualFormat_UsesUsedGB verifies that a two-verb text format
-// renders successfully in text mode using both the GB and percent values
-// (rather than being passed as a single value to the underlying %.1f verb,
-// which would panic via fmt's "%!f(MISSING)" only for too few args, but
-// silently mis-render for a swapped/undersupplied case).
+// TestRender_DualFormat_UsesUsedGB verifies that a {used}/{total}/{percent}
+// token format renders successfully in text mode using the GB and percent
+// values (rather than being passed unresolved to the underlying strategy).
 func TestRender_DualFormat_UsesUsedGB(t *testing.T) {
 	cfg := config.WidgetConfig{
 		Type:    "memory",
@@ -180,7 +158,7 @@ func TestRender_DualFormat_UsesUsedGB(t *testing.T) {
 		},
 		Mode: "text",
 		Text: &config.TextConfig{
-			Format: "R %.1fGB %.1f%%",
+			Format: "R {used}GB {percent}%",
 		},
 	}
 

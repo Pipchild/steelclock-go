@@ -3,6 +3,7 @@ package memory
 import (
 	"fmt"
 	"image"
+	"strings"
 	"sync"
 
 	"github.com/pozitronik/steelclock-go/internal/config"
@@ -114,10 +115,15 @@ func (w *Widget) Render() (image.Image, error) {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 
-	// In text mode, a format string with two value verbs (e.g. "%.1fGB (%.0f%%)")
-	// renders used-GB and percent together instead of just the percentage.
-	if w.displayMode == render.DisplayModeText && countFormatVerbs(w.textFormat) >= 2 {
-		text := fmt.Sprintf(w.textFormat, w.usedGB, w.currentValue)
+	// In text mode, {used}/{total}/{percent} tokens render a GB breakdown
+	// (e.g. "R {used}GB {percent}%"); plain printf formats keep rendering
+	// just the percentage through the strategy below.
+	if w.displayMode == render.DisplayModeText && strings.Contains(w.textFormat, "{") {
+		text := strings.NewReplacer(
+			"{used}", fmt.Sprintf("%.1f", w.usedGB),
+			"{total}", fmt.Sprintf("%.1f", w.totalGB),
+			"{percent}", fmt.Sprintf("%.0f", w.currentValue),
+		).Replace(w.textFormat)
 		w.Renderer.RenderText(img, text)
 		return img, nil
 	}
@@ -132,22 +138,4 @@ func (w *Widget) Render() (image.Image, error) {
 	}, w.Renderer)
 
 	return img, nil
-}
-
-// countFormatVerbs counts fmt verb specifiers in a format string, treating a
-// literal "%%" as zero verbs. Used to detect whether a configured text format
-// wants one value (percent, the default) or two (used-GB and percent).
-func countFormatVerbs(format string) int {
-	count := 0
-	for i := 0; i < len(format); i++ {
-		if format[i] != '%' {
-			continue
-		}
-		if i+1 < len(format) && format[i+1] == '%' {
-			i++ // literal "%%": skip both, not a verb
-			continue
-		}
-		count++
-	}
-	return count
 }

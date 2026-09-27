@@ -447,28 +447,9 @@ func TestNew_TextFormat(t *testing.T) {
 	}
 }
 
-func TestCountFormatVerbs(t *testing.T) {
-	tests := []struct {
-		format string
-		want   int
-	}{
-		{"%.0f", 1},
-		{"%.0f%%", 1},
-		{"%.1fGB %.1f%%", 2},
-		{"no verbs here", 0},
-		{"100%% done", 0},
-		{"%d/%d/%d", 3},
-	}
-
-	for _, tt := range tests {
-		if got := countFormatVerbs(tt.format); got != tt.want {
-			t.Errorf("countFormatVerbs(%q) = %d, want %d", tt.format, got, tt.want)
-		}
-	}
-}
-
-// TestWidget_Render_DualMemoryFormat verifies a two-verb text format on a
-// memory metric renders successfully using used-GB and percent together.
+// TestWidget_Render_DualMemoryFormat verifies a {used}/{total}/{percent}
+// token format on a memory metric renders successfully using used-GB and
+// percent together.
 func TestWidget_Render_DualMemoryFormat(t *testing.T) {
 	cfg := config.WidgetConfig{
 		Type:    "gpu",
@@ -479,7 +460,7 @@ func TestWidget_Render_DualMemoryFormat(t *testing.T) {
 		},
 		Mode: "text",
 		GPU:  &config.GPUConfig{Adapter: 0, Metric: MetricMemoryDedicated},
-		Text: &config.TextConfig{Format: "V %.1fGB %.1f%%"},
+		Text: &config.TextConfig{Format: "V {used}GB {percent}%"},
 	}
 
 	w, err := New(cfg)

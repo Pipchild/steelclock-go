@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image"
 	"log"
+	"strings"
 	"sync"
 
 	"github.com/pozitronik/steelclock-go/internal/bitmap"
@@ -242,11 +243,16 @@ func (w *Widget) Render() (image.Image, error) {
 		textFmt = w.textFormat
 	}
 
-	// In text mode for a memory metric, a format string with two value verbs
-	// (e.g. "%.1fGB (%.0f%%)") renders used-GB and percent together.
-	if w.displayMode == render.DisplayModeText && w.totalMemoryGB > 0 && countFormatVerbs(textFmt) >= 2 {
+	// In text mode, {used}/{total}/{percent} tokens render a GB breakdown for
+	// memory metrics (e.g. "V {used}GB {percent}%"); plain printf formats keep
+	// rendering just the percentage through the strategy below.
+	if w.displayMode == render.DisplayModeText && strings.Contains(textFmt, "{") {
 		usedGB := w.currentValue / 100 * w.totalMemoryGB
-		text := fmt.Sprintf(textFmt, usedGB, w.currentValue)
+		text := strings.NewReplacer(
+			"{used}", fmt.Sprintf("%.1f", usedGB),
+			"{total}", fmt.Sprintf("%.1f", w.totalMemoryGB),
+			"{percent}", fmt.Sprintf("%.0f", w.currentValue),
+		).Replace(textFmt)
 		w.Renderer.RenderText(img, text)
 		return img, nil
 	}
@@ -268,22 +274,4 @@ func (w *Widget) Stop() {
 	if w.reader != nil {
 		w.reader.Close()
 	}
-}
-
-// countFormatVerbs counts fmt verb specifiers in a format string, treating a
-// literal "%%" as zero verbs. Used to detect whether a configured text format
-// wants one value (percent, the default) or two (used-GB and percent).
-func countFormatVerbs(format string) int {
-	count := 0
-	for i := 0; i < len(format); i++ {
-		if format[i] != '%' {
-			continue
-		}
-		if i+1 < len(format) && format[i+1] == '%' {
-			i++ // literal "%%": skip both, not a verb
-			continue
-		}
-		count++
-	}
-	return count
 }
