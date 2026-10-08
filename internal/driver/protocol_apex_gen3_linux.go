@@ -9,11 +9,12 @@ package driver
 // the community reference implementation for the same OLED command
 // (https://github.com/SilasDaSilva/apex-pro-tkl-gen3-linux, PROTOCOL.md):
 // report ID 0x00 + CMD(2: 1F 81) + 640 bytes of pixel data + a trailing zero
-// byte, 644 bytes total. This is not the same layout as the Windows packet in
-// protocol_apex_gen3_windows.go (which omits the report-ID and trailing bytes
-// and relies on driver-level padding instead) because hidraw, unlike Windows'
-// HidD_SetFeature, does not strip the report ID for the caller. Needs
-// confirmation on real Linux hardware before being considered reliable.
+// byte, 644 bytes total. Like HidD_SetFeature on Windows, the kernel strips
+// report ID 0 for unnumbered reports, so the device receives 643 bytes. The
+// only difference from protocol_apex_gen3_windows.go is the trailing byte,
+// which Windows gets from driver-level padding to the declared report length
+// instead. Needs confirmation on real Linux hardware before being considered
+// reliable.
 func buildApexGen3Packet(pixelData []byte, width, height int) []byte {
 	dataSize := width * height / 8
 	packetSize := 1 + 2 + dataSize + 1 // ReportID(1) + CMD(2: 1F 81) + Data + trailing 0x00
