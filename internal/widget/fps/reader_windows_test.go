@@ -4,6 +4,7 @@ package fps
 
 import (
 	"encoding/binary"
+	"errors"
 	"testing"
 	"unsafe"
 )
@@ -39,7 +40,7 @@ func (f *fakeRTSSSegment) setEntry(index int, pid, frameTime, time0, time1, fram
 }
 
 func (f *fakeRTSSSegment) reader() *rtssReader {
-	return &rtssReader{base: uintptr(unsafe.Pointer(&f.buf[0]))}
+	return &rtssReader{base: unsafe.Pointer(&f.buf[0])}
 }
 
 func now() uint32 {
@@ -52,7 +53,7 @@ func TestGetFPS_InvalidSignature_ReturnsErrRTSSGone(t *testing.T) {
 	r := seg.reader()
 
 	_, _, err := r.GetFPS()
-	if err != errRTSSGone {
+	if !errors.Is(err, errRTSSGone) {
 		t.Errorf("GetFPS() error = %v, want errRTSSGone", err)
 	}
 }
@@ -62,16 +63,16 @@ func TestGetFPS_OldVersion_ReturnsErrRTSSGone(t *testing.T) {
 	r := seg.reader()
 
 	_, _, err := r.GetFPS()
-	if err != errRTSSGone {
+	if !errors.Is(err, errRTSSGone) {
 		t.Errorf("GetFPS() error = %v, want errRTSSGone", err)
 	}
 }
 
 func TestGetFPS_ClosedReader_ReturnsErrRTSSGone(t *testing.T) {
-	r := &rtssReader{base: 0}
+	r := &rtssReader{}
 
 	_, _, err := r.GetFPS()
-	if err != errRTSSGone {
+	if !errors.Is(err, errRTSSGone) {
 		t.Errorf("GetFPS() error = %v, want errRTSSGone", err)
 	}
 }

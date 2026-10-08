@@ -79,7 +79,11 @@ func getForegroundProcessID() uint32 {
 // stable, already-hooked source of per-process FPS without implementing our
 // own DirectX/OpenGL/Vulkan present hooks.
 type rtssReader struct {
-	base uintptr
+	// base is the start of the mapped view. It is kept as an unsafe.Pointer
+	// (not a uintptr) so field addresses are derived with unsafe.Add, which
+	// keeps pointer provenance intact for the checkptr instrumentation that
+	// -race enables.
+	base unsafe.Pointer
 	mu   sync.Mutex
 }
 
@@ -98,21 +102,22 @@ func newRTSSReader() (*rtssReader, error) {
 	handle := syscall.Handle(h)
 	defer func() { _ = syscall.CloseHandle(handle) }() // MapViewOfFile keeps its own reference
 
-	base, _, _ := procMapViewOfFile.Call(h, fileMapRead, 0, 0, 0)
-	if base == 0 {
+	addr, _, _ := procMapViewOfFile.Call(h, fileMapRead, 0, 0, 0)
+	if addr == 0 {
 		return nil, fmt.Errorf("failed to map RTSS shared memory")
 	}
-	return &rtssReader{base: base}, nil
+	// The view is mapped outside the Go heap, so converting its address is safe.
+	return &rtssReader{base: unsafe.Pointer(addr)}, nil
 }
 
-func readU32(base uintptr, off uintptr) uint32 {
-	return *(*uint32)(unsafe.Pointer(base + off))
+func readU32(base unsafe.Pointer, off uintptr) uint32 {
+	return *(*uint32)(unsafe.Add(base, off))
 }
 
-func readCString(base uintptr, maxLen int) string {
+func readCString(base unsafe.Pointer, maxLen int) string {
 	b := make([]byte, 0, maxLen)
 	for i := 0; i < maxLen; i++ {
-		c := *(*byte)(unsafe.Pointer(base + uintptr(i)))
+		c := *(*byte)(unsafe.Add(base, i))
 		if c == 0 {
 			break
 		}
@@ -128,7 +133,7 @@ func (r *rtssReader) GetFPS() (fps float64, processName string, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.base == 0 {
+	if r.base == nil {
 		return 0, "", errRTSSGone
 	}
 	// Per the RTSS SDK, only a segment carrying the 'RTSS' signature and a
@@ -159,13 +164,13 @@ func (r *rtssReader) GetFPS() (fps float64, processName string, err error) {
 
 	var (
 		osMatchFPS, rtssMatchFPS, latestFPS       float64
-		osMatchBase, rtssMatchBase, latestBase    uintptr
+		osMatchBase, rtssMatchBase, latestBase    unsafe.Pointer
 		osMatchFound, rtssMatchFound, latestFound bool
 		latestTime1                               uint32
 	)
 
 	for i := uint32(0); i < appArrSize; i++ {
-		entryBase := r.base + appArrOffset + uintptr(i)*appEntrySize
+		entryBase := unsafe.Add(r.base, appArrOffset+uintptr(i)*appEntrySize)
 		pid := readU32(entryBase, entryOffProcessID)
 		if pid == 0 {
 			continue
@@ -212,11 +217,11 @@ func (r *rtssReader) GetFPS() (fps float64, processName string, err error) {
 	// decoded only for the entry actually selected, not every candidate.
 	switch {
 	case osMatchFound:
-		return osMatchFPS, readCString(osMatchBase+entryOffName, entryOffNameLen), nil
+		return osMatchFPS, readCString(unsafe.Add(osMatchBase, entryOffName), entryOffNameLen), nil
 	case rtssMatchFound:
-		return rtssMatchFPS, readCString(rtssMatchBase+entryOffName, entryOffNameLen), nil
+		return rtssMatchFPS, readCString(unsafe.Add(rtssMatchBase, entryOffName), entryOffNameLen), nil
 	case latestFound:
-		return latestFPS, readCString(latestBase+entryOffName, entryOffNameLen), nil
+		return latestFPS, readCString(unsafe.Add(latestBase, entryOffName), entryOffNameLen), nil
 	default:
 		return 0, "", nil
 	}
@@ -226,9 +231,9 @@ func (r *rtssReader) GetFPS() (fps float64, processName string, err error) {
 func (r *rtssReader) Close() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.base != 0 {
-		_, _, _ = procUnmapViewOfFile.Call(r.base)
-		r.base = 0
+	if r.base != nil {
+		_, _, _ = procUnmapViewOfFile.Call(uintptr(r.base))
+		r.base = nil
 	}
 }
 
